@@ -20,6 +20,15 @@ Some downsides.
 **NOTE**: These have only been tested on SGE clusters. You can probably find ways to run 
 on other cluster setups with a little modification.
 
+Versions
+--------
+
+As many of you know, we evolve the secondary software from time to time.  The makefiles 
+will be branched accordingly so you can find makefiles compatible with the version of 
+secondary that you have installed.  The master branch will be compatible with the most 
+recently released version of secondary, usually taking advantage of some recent 
+improvements to the code base that won't be found in older releases.
+
 Running
 -------
 
