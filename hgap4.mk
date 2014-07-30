@@ -46,13 +46,10 @@ assembly : polish/polished_assembly.fasta | prepare
 
 ## Assembly polishing ##
 
-polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference cmph5_chemistry_loaded
+polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference
 	$(QSUB) -N polish -pe smp $(NPROC) variantCaller.py -P $(SMRTETC)/algorithm_parameters/2014-03 \
 	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o polish/corrections.gff \
 	-o $@ -o $(@:.fasta=.fastq.gz)
-
-cmph5_chemistry_loaded : filter/chemistry_mapping.xml polish/aligned_reads.cmp.h5
-	loadSequencingChemistryIntoCmpH5.py --xml $< --h5 $(word 2,$^) && touch chemistry_loaded
 
 polish/aligned_reads.cmp.h5 : $(CMPH5)
 	assertCmpH5NonEmpty.py --debug $^
@@ -146,9 +143,6 @@ $(REGFOFNS) : filter/regions.%.fofn : input.%.fofn | prepare
 	$(QSUB) -N filt.$* filter_plsh5.py --filter='MinReadScore=0.80,MinSRL=500,MinRL=100' \
 	--trim='True' --outputDir=filter --outputFofn=$@ $<
 
-filter/chemistry_mapping.xml : filter/movie_metadata
-	makeChemistryMapping.py --metadata=filter/movie_metadata --output=filter/chemistry_mapping.xml --mapping_xml=$(SMRTETC)/algorithm_parameters/2013-09/mapping.xml
-
 filter/movie_metadata : input.fofn
 	mkdir -p $@
 	sed 's#\(.*\)Analysis_Results/\(m[^\.]*\).*#\1\2.metadata.xml#' $< | sort -u | xargs ln -s -t $@
@@ -164,5 +158,4 @@ $(BAXFOFNS) : input.fofn
 
 clean :
 	rm -rf $(TASKDIRS)
-	rm -f chemistry_loaded
 	rm -f input.chunk*
