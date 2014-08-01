@@ -13,6 +13,9 @@ INPUT ?= input.fofn
 
 SHELL = /bin/bash
 TASKDIRS = filter correct assemble polish log
+SUBPFX = subreads
+LONGPFX = longreads
+DALPFX = $(SUBPFX).$(LONGPFX)
 
 SMRTETC = $(SEYMOUR_HOME)/analysis/etc
 PWD = $(shell pwd)
@@ -22,9 +25,11 @@ SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
 
 VPATH := $(shell sed 's:^\(.*\)/.*:\1:' $(INPUT) | sort -u)
 MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' input.fofn | sort -u)
-SUBFASTA := $(MOVIES:%=filter/%.fasta)
-DALFILES = subreads.subreads.C0.las subreads.subreads.C1.las subreads.subreads.C2.las subreads.subreads.C3.las \
-           subreads.subreads.N0.las subreads.subreads.N1.las subreads.subreads.N2.las subreads.subreads.N3.las
+SUBFASTA := $(MOVIES:%=filter/%.$(SUBPFX).fasta)
+SUBLENGTHS := $(SUBFASTA:%.fasta=%.lengths)
+LONGFASTA := $(SUBFASTA:%.$(SUBPFX).fasta=%.$(LONGPFX).fasta)
+DALFILES = $(SUBPFX).$(LONGPFX).C0.las $(SUBPFX).$(LONGPFX).C1.las $(SUBPFX).$(LONGPFX).C2.las $(SUBPFX).$(LONGPFX).C3.las \
+           $(SUBPFX).$(LONGPFX).N0.las $(SUBPFX).$(LONGPFX).N1.las $(SUBPFX).$(LONGPFX).N2.las $(SUBPFX).$(LONGPFX).N3.las
 
 DAZALN := $(DALFILES:%=correct/%)
 DAZALNSORT := $(DAZALN:%.las=%.S.las)
@@ -32,9 +37,6 @@ DAZALNSORT := $(DAZALN:%.las=%.S.las)
 # Chunks are maintained throughout workflow. Need to add some elasticity to handle
 # larger datasets
 BAXFOFNS := $(foreach c,$(CHUNKS),$(shell printf "input.chunk%03dof%03d.fofn" $(c) $(CHUNK_SIZE)))
-#SUBFASTA := $(BAXFOFNS:input.%.fofn=filter/subreads.%.fasta)
-SUBLENGTHS := $(BAXFOFNS:input.%.fofn=filter/subreads.%.lengths)
-LONGFASTA := $(BAXFOFNS:input.%.fofn=filter/longreads.%.fasta)
 MAPPEDM4 := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4)
 MAPPEDM4FILT := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4.filt)
 CORRECTED := $(BAXFOFNS:input.%.fofn=correct/corrected.%.fasta)
@@ -101,54 +103,71 @@ correct/corrected.fasta : $(CORRECTED)
 ##
 
 ## Correction (optimizations available here) ##
-correction : $(CORRECTED) ;
+correct : corrected.fasta ;
 
-$(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4.filt correct/seeds.m4.fofn filter/subreads.fasta
-	$(QSUB) -N corr.$* -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
+corrected.fasta : correct/$(DALPFX).m4.filt correct/seeds.m4.fofn filter/subreads.fasta
+	$(QSUB) -N corr -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
-correct/seeds.m4.fofn : $(MAPPEDM4FILT)
+correct/seeds.m4.fofn : correct/$(DALPFX).m4.filt
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
 
-$(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4
+correct/$(DALPFX).m4.filt : correct/$(DALPFX).m4
 	filterm4.py $< > $@
 
 filter/subreads.fasta : $(SUBFASTA)
 	cat $^ > $@
 ##
 
-# Adapt daligner data to m4
+## Adapt daligner data to m4 ##
+adapt : correct/$(DALPFX).m4 
+
+correct/$(DALPFX).m4 : correct/$(LONGPFX).db correct/$(DALPFX).merge.las
+	daz2m4.pl $^ > $@
+##
 
 ## Read overlap using DALIGNER ##
-dazaln : correct/subreads.merge.las
+dazaln : correct/$(DALPFX).merge.las
 
-correct/subreads.merge.las : $(DAZALNSORT)
+correct/$(DALPFX).merge.las : $(DAZALNSORT)
 	LAmerge $@ $^
 
-$(DAZALNSORT) : correct/%.S.las : correct/%.las
-	LAsort $^
+$(DAZALNSORT) : correct/%.S.las : correct/%.las correct/daligner.done
+	LAsort $<
 
 # XXX fix this dependency!!
-daligner.done : dazdb
-	cd correct && daligner -t9 subreads subreads && touch daligner.done
+correct/daligner.done : correct/$(SUBPFX).db correct/$(LONGPFX).db
+	cd correct && daligner -t9 $^
+	touch $@
+
+$(DAZALN) : ;
 
 ##
 
-dazdb : correct/subreads.db
+dazdb : correct/$(SUBPFX).db correct/$(LONGPFX).db
 
-correct/subreads.db : $(SUBFASTA)
+correct/$(LONGPFX).db : $(LONGFASTA)
 	fasta2DB $@ $^
 
-subreads : $(SUBFASTA)
+correct/$(SUBPFX).db : $(SUBFASTA)
+	fasta2DB $@ $^
 
-$(SUBFASTA) : filter/%.fasta : %.1.bax.h5 %.2.bax.h5 %.3.bax.h5 | prepare
-	dextract -s800 $^ > $@
+## Generating the long seed reads for mapping ##
+longreads : $(LONGFASTA) ;
 
-## Initial chunking ##
-inputs : $(BAXFOFNS) ;
+$(LONGFASTA) : filter/%.$(LONGPFX).fasta : filter/%.$(SUBPFX).fasta filter/%.$(SUBPFX).lengths $(CUTOFF)
+	awk -v len=$$(cat $(CUTOFF)) '($$1 < len ){ print $$2 }' $(word 2,$^) | fastaremove $< stdin > $@
 
-$(BAXFOFNS) : input.fofn
-	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
+$(CUTOFF) : $(SUBLENGTHS)
+	sort -nrmk1,1 $^ | awk '{t+=$$1;if(t>=$(GENOME_SIZE)*30){print $$1;exit;}}' > $@
+
+$(SUBLENGTHS) : filter/%.$(SUBPFX).lengths : filter/%.$(SUBPFX).fasta
+	fastalength $< | sort -nrk1,1 > $@
 ##
+
+subreads : $(SUBFASTA) ;
+
+$(SUBFASTA) : filter/%.$(SUBPFX).fasta : %.1.bax.h5 %.2.bax.h5 %.3.bax.h5 | prepare
+	dextract -s800 $^ > $@
 
 clean :
 	rm -rf $(TASKDIRS)

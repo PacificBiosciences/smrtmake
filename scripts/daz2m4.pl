@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
-my $dazPfx = shift;
+my $dbFile = shift;
+my $lasFile = shift;
 
 sub pbidToLen {
     my $pbid = shift;
@@ -11,7 +12,7 @@ sub pbidToLen {
 sub prolog {
     $iid = shift;
     foreach my $partition (@dbmeta) {
-        if ($iid < $partition->[0]) {
+        if ($iid <= $partition->[0]) {
             return $partition->[1];
         }
     } 
@@ -38,15 +39,26 @@ sub collapse {
     my $s = $strand eq "c" ? 1 : 0;
     my $alndiff = abs($alnlenQ - $alnlenT);
     my $pctid = sprintf "%.4f", (1 - ($diffcnt + $alndiff) / $alnlenQ) * 100;
-    my $score = int($pctid * 1000);
-    printf "$pbidQ $pbidT -$score $pctid 0 $minQ $maxQ $lenQ $s $minT $maxT $lenT 0\n";
+    my $score = $alnlenQ;
+    return "$pbidQ $pbidT -$score $pctid 0 $minQ $maxQ $lenQ $s $minT $maxT $lenT 0";
+}
+
+sub emitSet {
+    my @sorted = map { $_->[0] } 
+                 sort { $a->[1] <=> $b->[1] } 
+                 map { [$_, (split)[2]] } @_;
+
+    # XXX limit to bestn, parameterize
+    foreach my $rec (@sorted[0..24]) {
+        print "$rec\n"; 
+    }
 }
 
 # XXX fix this when daz partitions are better understood
-open DBM, $dazPfx.".db";
+open DBM, $dbFile;
 our @dbmeta = ();
 while (<DBM>) {
-    if (/\s+(\d+) (m\d+_\S+)/) {
+    if (/\s+(\d+) m\d+_\S+ (m\d+_\S+)/) {
         my $maxId = $1;
         my $movPfx = $2; 
         push @dbmeta, [$maxId, $movPfx];
@@ -54,7 +66,7 @@ while (<DBM>) {
 }
 close DBM;
 
-open DB, "DBshow $dazPfx|";
+open DB, "DBshow $dbFile|";
 %rinfo = {};
 $iid = 1;
 while (<DB>) {
@@ -65,9 +77,11 @@ while (<DB>) {
 }
 close DB;
 
-my $prev = "0:0";
+my $prevPair = "0:0";
+my $prevQ = 0;
 my @recs = ();
-open LA, "LAshow ".$dazPfx.".merge|";
+my @alnset = ();
+open LA, "LAshow $lasFile|";
 while (<LA>) {
     # <spaces>
     # subreads.merge: 5,688,372 records
@@ -82,17 +96,27 @@ while (<LA>) {
 
     # 2        320 c        0  2381   1951  4455        413 diffs  ( 23 trace pts)
     my @f = split;
-    my $curr = "$f[0]:$f[1]";
-    if ($curr ne $prev) {
-        if ($prev ne "0:0") {
-            collapse(@recs);
+    my $currQ = $f[0];
+    my $currPair = "$f[0]:$f[1]";
+    if ($currPair ne $prevPair) {
+        if ($prevPair ne "0:0") {
+            my $m4 = collapse(@recs);
+            push @alnset, $m4;
             @recs = (); 
         }
-        $prev = $curr;
+        if ($prevQ != $currQ) {
+            if ($prevQ != 0) {
+                emitSet @alnset;
+                @alnset = ();
+            }
+            $prevQ = $currQ;
+        }
+        $prevPair = $currPair;
     }
     push @recs, $_;
 }
 close LA;
 
-collapse(@recs);
+collapse @recs;
+emitSet @alnset;
 
