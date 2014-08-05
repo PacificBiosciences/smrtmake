@@ -14,8 +14,7 @@ INPUT ?= input.fofn
 SHELL = /bin/bash
 TASKDIRS = filter correct assemble polish log
 SUBPFX = subreads
-LONGPFX = longreads
-DALPFX = $(SUBPFX).$(LONGPFX)
+DALPFX = $(SUBPFX).$(SUBPFX)
 
 SMRTETC = $(SEYMOUR_HOME)/analysis/etc
 PWD = $(shell pwd)
@@ -27,9 +26,8 @@ VPATH := $(shell sed 's:^\(.*\)/.*:\1:' $(INPUT) | sort -u)
 MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' input.fofn | sort -u)
 SUBFASTA := $(MOVIES:%=filter/%.$(SUBPFX).fasta)
 SUBLENGTHS := $(SUBFASTA:%.fasta=%.lengths)
-LONGFASTA := $(SUBFASTA:%.$(SUBPFX).fasta=%.$(LONGPFX).fasta)
-DALFILES = $(SUBPFX).$(LONGPFX).C0.las $(SUBPFX).$(LONGPFX).C1.las $(SUBPFX).$(LONGPFX).C2.las $(SUBPFX).$(LONGPFX).C3.las \
-           $(SUBPFX).$(LONGPFX).N0.las $(SUBPFX).$(LONGPFX).N1.las $(SUBPFX).$(LONGPFX).N2.las $(SUBPFX).$(LONGPFX).N3.las
+DALFILES = $(DALPFX).C0.las $(DALPFX).C1.las $(DALPFX).C2.las $(DALPFX).C3.las \
+           $(DALPFX).N0.las $(DALPFX).N1.las $(DALPFX).N2.las $(DALPFX).N3.las
 
 DAZALN := $(DALFILES:%=correct/%)
 DAZALNSORT := $(DAZALN:%.las=%.S.las)
@@ -87,46 +85,47 @@ assemble/utg.finished : assemble/utg.spec assemble/utg.frg
 	touch $@
 
 assemble/utg.spec : correct/corrected.fasta
-	runCASpecWriter.py  -vv --bitTable=$(SMRTETC)/celeraAssembler/bitTable \
+	runCASpecWriter.py  --bitTable=$(SMRTETC)/celeraAssembler/bitTable \
 	--interactiveTmpl=$(SMRTETC)/cluster/SGE/interactive.tmpl \
 	--smrtpipeRc=$(SMRTETC)/smrtpipe.rc --genomeSize=$(GENOME_SIZE) --defaultFrgMinLen=500 \
 	--xCoverage=20 --ovlErrorRate=0.06 --ovlMinLen=40 --merSize=14 --corrReadsFasta=$< \
 	--specOut=$@ --sgeName=utg --gridParams="useGrid:1, scriptOnGrid:1, frgCorrOnGrid:1, ovlCorrOnGrid:1" \
 	--maxSlotPerc=1 $(SMRTETC)/celeraAssembler/unitig.spec
 
-assemble/utg.frg : $(CORRECTED)
-	fastqToCA -technology sanger -type sanger -libraryname corr $(patsubst %,-reads %,$(^:.fasta=.fastq)) > $@
-
-correct/corrected.fasta : $(CORRECTED)
-	cat $^ > $@
+assemble/utg.frg : correct/corrected.fastq
+	#fastqToCA -technology sanger -type sanger -libraryname corr $(patsubst %,-reads %,$(^:.fasta=.fastq)) > $@
+	fastqToCA -technology sanger -type sanger -libraryname corr -reads $^ > $@
 
 ##
 
 ## Correction (optimizations available here) ##
-correct : corrected.fasta ;
+correct : correct/corrected.fasta ;
 
-corrected.fasta : correct/$(DALPFX).m4.filt correct/seeds.m4.fofn filter/subreads.fasta
-	$(QSUB) -N corr -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
+correct/corrected.fastq correct/corrected.fasta : correct/$(DALPFX).m4.filt correct/seeds.m4.fofn filter/subreads.fasta
+	$(QSUB) -N corr -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 cov=6 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
 correct/seeds.m4.fofn : correct/$(DALPFX).m4.filt
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
 
+filter : correct/$(DALPFX).m4.filt ;
+
 correct/$(DALPFX).m4.filt : correct/$(DALPFX).m4
 	filterm4.py $< > $@
 
+# Minor edit to header and uppercase the bases
 filter/subreads.fasta : $(SUBFASTA)
-	cat $^ > $@
+	sed '/^[^>]/ y/acgt/ACGT/;s/ RQ=.*//' $^ > $@
 ##
 
 ## Adapt daligner data to m4 ##
-adapt : correct/$(DALPFX).m4 
+adapt : correct/$(DALPFX).m4 ;
 
-correct/$(DALPFX).m4 : correct/$(LONGPFX).db correct/$(DALPFX).merge.las
+correct/$(DALPFX).m4 : correct/$(SUBPFX).db correct/$(DALPFX).merge.las $(CUTOFF)
 	daz2m4.pl $^ > $@
 ##
 
 ## Read overlap using DALIGNER ##
-dazaln : correct/$(DALPFX).merge.las
+dazaln : correct/$(DALPFX).merge.las ;
 
 correct/$(DALPFX).merge.las : $(DAZALNSORT)
 	LAmerge $@ $^
@@ -134,35 +133,27 @@ correct/$(DALPFX).merge.las : $(DAZALNSORT)
 $(DAZALNSORT) : correct/%.S.las : correct/%.las correct/daligner.done
 	LAsort $<
 
-# XXX fix this dependency!!
-correct/daligner.done : correct/$(SUBPFX).db correct/$(LONGPFX).db
-	cd correct && daligner -t9 $^
+correct/daligner.done : correct/$(SUBPFX).db
+	$(QSUB) -N daligner -pe smp 5 daligner -t9 $< $<
+	mv $(DALFILES) correct/
 	touch $@
 
 $(DAZALN) : ;
 
 ##
 
-dazdb : correct/$(SUBPFX).db correct/$(LONGPFX).db
-
-correct/$(LONGPFX).db : $(LONGFASTA)
-	fasta2DB $@ $^
-
-correct/$(SUBPFX).db : $(SUBFASTA)
-	fasta2DB $@ $^
-
-## Generating the long seed reads for mapping ##
-longreads : $(LONGFASTA) ;
-
-$(LONGFASTA) : filter/%.$(LONGPFX).fasta : filter/%.$(SUBPFX).fasta filter/%.$(SUBPFX).lengths $(CUTOFF)
-	awk -v len=$$(cat $(CUTOFF)) '($$1 < len ){ print $$2 }' $(word 2,$^) | fastaremove $< stdin > $@
-
+## Find seed read cutoff
 $(CUTOFF) : $(SUBLENGTHS)
 	sort -nrmk1,1 $^ | awk '{t+=$$1;if(t>=$(GENOME_SIZE)*30){print $$1;exit;}}' > $@
 
 $(SUBLENGTHS) : filter/%.$(SUBPFX).lengths : filter/%.$(SUBPFX).fasta
 	fastalength $< | sort -nrk1,1 > $@
 ##
+
+dazdb : correct/$(SUBPFX).db
+
+correct/$(SUBPFX).db : $(SUBFASTA)
+	fasta2DB $@ $^
 
 subreads : $(SUBFASTA) ;
 
