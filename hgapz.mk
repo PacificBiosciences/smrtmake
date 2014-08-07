@@ -19,9 +19,6 @@ DALPFX = $(SUBPFX).$(SUBPFX)
 SMRTETC = $(SEYMOUR_HOME)/analysis/etc
 PWD = $(shell pwd)
 
-CHUNKS := $(shell seq 1 $(CHUNK_SIZE))
-SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
-
 VPATH := $(shell sed 's:^\(.*\)/.*:\1:' $(INPUT) | sort -u)
 MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' input.fofn | sort -u)
 SUBFASTA := $(MOVIES:%=filter/%.$(SUBPFX).fasta)
@@ -34,7 +31,11 @@ DAZALNSORT := $(DAZALN:%.las=%.S.las)
 
 # Chunks are maintained throughout workflow. Need to add some elasticity to handle
 # larger datasets
+CHUNKS := $(shell seq 1 $(CHUNK_SIZE))
+SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
 BAXFOFNS := $(foreach c,$(CHUNKS),$(shell printf "input.chunk%03dof%03d.fofn" $(c) $(CHUNK_SIZE)))
+REGFOFNS := $(BAXFOFNS:input.%=filter/regions.%)
+DAZ2M4 := $(BAXFOFNS:input.%.fofn=correct/daz2m4.%.areads)
 MAPPEDM4 := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4)
 MAPPEDM4FILT := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4.filt)
 CORRECTED := $(BAXFOFNS:input.%.fofn=correct/corrected.%.fasta)
@@ -92,24 +93,26 @@ assemble/utg.spec : correct/corrected.fasta
 	--specOut=$@ --sgeName=utg --gridParams="useGrid:1, scriptOnGrid:1, frgCorrOnGrid:1, ovlCorrOnGrid:1" \
 	--maxSlotPerc=1 $(SMRTETC)/celeraAssembler/unitig.spec
 
-assemble/utg.frg : correct/corrected.fastq
-	#fastqToCA -technology sanger -type sanger -libraryname corr $(patsubst %,-reads %,$(^:.fasta=.fastq)) > $@
-	fastqToCA -technology sanger -type sanger -libraryname corr -reads $^ > $@
+assemble/utg.frg : $(CORRECTED)
+	fastqToCA -technology sanger -type sanger -libraryname corr $(patsubst %,-reads %,$(^:.fasta=.fastq)) > $@
+
+correct/corrected.fasta : $(CORRECTED)
+	cat $^ > $@
 
 ##
 
-## Correction (optimizations available here) ##
-correct : correct/corrected.fasta ;
+## Correction ##
+correct : $(CORRECTED) ;
 
-correct/corrected.fastq correct/corrected.fasta : correct/$(DALPFX).m4.filt correct/seeds.m4.fofn filter/subreads.fasta
+$(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4.filt correct/seeds.m4.fofn filter/subreads.fasta
 	$(QSUB) -N corr -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 cov=6 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
-correct/seeds.m4.fofn : correct/$(DALPFX).m4.filt
+correct/seeds.m4.fofn : $(MAPPEDM4FILT)
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
 
-filter : correct/$(DALPFX).m4.filt ;
+filter : $(MAPPEDM4FILT) ;
 
-correct/$(DALPFX).m4.filt : correct/$(DALPFX).m4
+$(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4 
 	filterm4.py $< > $@
 
 # Minor edit to header and uppercase the bases
@@ -117,14 +120,35 @@ filter/subreads.fasta : $(SUBFASTA)
 	sed '/^[^>]/ y/acgt/ACGT/;s/ RQ=.*//' $^ > $@
 ##
 
-## Adapt daligner data to m4 ##
-adapt : correct/$(DALPFX).m4 ;
+## The key bridgepoint: adapt daligner output to m4 format ##
+adapt : $(MAPPEDM4) ;
 
-correct/$(DALPFX).m4 : correct/$(SUBPFX).db correct/$(DALPFX).merge.las $(CUTOFF)
+# Yeah, I wrote it in perl ... so what?
+$(MAPPEDM4) : correct/seeds.%.m4 : correct/daz2m4.%.areads correct/dazids.lst correct/$(DALPFX).merge.las $(CUTOFF)
 	daz2m4.pl $^ > $@
+
+$(DAZ2M4) : rechunk.done ;
+
+# Arrange the alignment data for processing into HGAP chunks.  To ease querying
+# alignments, split the ids into ranges
+# daz2m4.<chunk>.areads
+rechunk.done : correct/dazids.lst
+	@mktemp -d -p $(LOCALTMP) > dir.tmp
+	@cat dir.tmp
+	awk -v tmp=$$(cat dir.tmp) '{print > sprintf("%s/daz2m4.chunk%03dof%03d.areads", tmp, ++c%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
+	@mv $$(cat dir.tmp)/* correct/
+	@rm -rf $$(cat dir.tmp) dir.tmp
+	@touch $@
+
+# daz <-> pbi ID translation
+# <daz iid> <pacb id>
+correct/dazids.lst : $(SUBFASTA)
+	awk '($$1~">"){print ++c,substr($$1,2)}' $^ > $@
+
 ##
 
-## Read overlap using DALIGNER ##
+## Read overlap using DALIGNER
+# XXX: Need to see how blocks affect this output
 dazaln : correct/$(DALPFX).merge.las ;
 
 correct/$(DALPFX).merge.las : $(DAZALNSORT)
@@ -150,8 +174,17 @@ $(SUBLENGTHS) : filter/%.$(SUBPFX).lengths : filter/%.$(SUBPFX).fasta
 	fastalength $< | sort -nrk1,1 > $@
 ##
 
+## Integration with dazzler flow, this has some explicit block enforcements
+#  limited by the size of the daz internal read id.  All movies must be loaded
+#  independently.  After creating the database, it must be split into blocks,
+#  or chunks, if the # of reads is greater than uint16 (65,536).  This block
+#  scheme will not be the same as the HGAP chunk scheme, so we'll have to 
+#  manage dazzler blocks with HGAP chunks.
+# XXX: Test on large enough dataset to necessitate block splitting.
 dazdb : correct/$(SUBPFX).db
 
+# NOTE: the order here determines how the daz internal ids get asseigned in the 
+# database, important bridge for jumping between the HGAP/Dazzler worlds.
 correct/$(SUBPFX).db : $(SUBFASTA)
 	fasta2DB $@ $^
 
@@ -160,6 +193,26 @@ subreads : $(SUBFASTA) ;
 $(SUBFASTA) : filter/%.$(SUBPFX).fasta : %.1.bax.h5 %.2.bax.h5 %.3.bax.h5 | prepare
 	dextract -s800 $^ > $@
 
+##
+
+## Standard region filtering, still needed for quiver ##
+$(REGFOFNS) : filter/regions.%.fofn : input.%.fofn | prepare
+	$(QSUB) -N filt.$* filter_plsh5.py --filter='MinReadScore=0.80,MinSRL=500,MinRL=100' \
+	--trim='True' --outputDir=filter --outputFofn=$@ $<
+
+##
+
+## Initial chunking (for HGAP-related workflow steps) ##
+$(BAXFOFNS) : chunkinput.done ;
+
+chunkinput.done : input.fofn
+	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
+	@touch $@
+##
+
 clean :
 	rm -rf $(TASKDIRS)
 	rm -f input.chunk*
+	rm -f $(DALPFX)*
+	rm -f rechunk.done
+	if [ -e dir.tmp ]; then rm -rf $$(cat dir.tmp); rm dir.tmp; fi;

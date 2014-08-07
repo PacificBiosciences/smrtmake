@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
-my $dbFile = shift;
+my $chunkFile = shift;
+my $idMapFile = shift;
 my $lasFile = shift;
 my $cutFile = shift;
 
@@ -10,19 +11,9 @@ sub pbidToLen {
     return $v[1] - $v[0];
 }
 
-sub prolog {
-    $iid = shift;
-    foreach my $partition (@dbmeta) {
-        if ($iid <= $partition->[0]) {
-            return $partition->[1];
-        }
-    } 
-}
-
 sub selfHit {
     my $qid = shift;
-    my $movie = prolog $qid;
-    my $pbidQ = $movie."/".$rinfo{$qid};
+    my $pbidQ = $rinfo{$qid};
     my $lenQ = pbidToLen $pbidQ;
     return "$pbidQ $pbidQ -40000 100.0000 0 0 $lenQ $lenQ 0 0 $lenQ $lenQ 0";
 }
@@ -68,9 +59,8 @@ sub collapse {
         $diffcnt += $f[7];
     }
     
-    my $movie = prolog $qid;
-    my $pbidQ = $movie."/".$rinfo{$qid};
-    my $pbidT = $movie."/".$rinfo{$tid};
+    my $pbidQ = $rinfo{$qid};
+    my $pbidT = $seeds{$tid};
     my $lenQ = pbidToLen $pbidQ;
     my $lenT = pbidToLen $pbidT;
     my $s = $strand eq "c" ? 1 : 0;
@@ -85,7 +75,7 @@ sub emitSet {
                  sort { $a->[1] <=> $b->[1] } 
                  map { [$_, (split)[2]] } @_;
 
-    # XXX limit to bestn, parameterize
+    # XXX parameterize?
     my $count = 0;
     foreach my $rec (@sorted) {
         print "$rec\n";
@@ -94,36 +84,28 @@ sub emitSet {
 }
 
 open CUT, $cutFile;
-my $cutoff = <CUT>;
+our $cutoff = <CUT>;
 chomp $cutoff;
 
-# XXX fix this when daz partitions are better understood
-open DBM, $dbFile;
-our @dbmeta = ();
-while (<DBM>) {
-    if (/\s+(\d+) m\d+_\S+ (m\d+_\S+)/) {
-        my $maxId = $1;
-        my $movPfx = $2; 
-        push @dbmeta, [$maxId, $movPfx];
+our %seeds = {};
+open IDM, $idMapFile;
+while (<IDM>) {
+    chomp;
+    my ($iid, $pbid) = split;
+    my $len = pbidToLen $pbid;
+    if ($len >= $cutoff) {
+        $seeds{$iid} = $pbid;
     }
 }
-close DBM;
 
-open DB, "DBshow $dbFile|";
-%rinfo = {};
-%seeds = {};
-$iid = 1;
-while (<DB>) {
-    if (m#>Prolog/(\S+) RQ#) {
-        my $pbid = $1;
-        my $len = pbidToLen $pbid;
-        if ($len >= $cutoff) {
-            $seeds{$iid}++;
-        }
-        $rinfo{$iid++} = $pbid;
-    }
+open CHUNK, $chunkFile; 
+our %rinfo = {};
+while (<CHUNK>) {
+    chomp;
+    my ($iid, $pbid) = split;
+    $rinfo{$iid} = $pbid;
 }
-close DB;
+close CHUNK;
 
 my $prevPair = "0:0:0";
 my $prevQ = 0;
@@ -146,14 +128,16 @@ while (<LA>) {
 
     # 2        320 c        0  2381   1951  4455        413 diffs  ( 23 trace pts)
     my @f = split;
-    $currQ = $f[0];
-    $currT = $f[1];
-    $currS = $f[2]; # strand (n = forward, c = reverse)
+    # currS: strand (n = forward, c = reverse)
+    ($currQ, $currT, $currS) = @f[0..2];
+    if (not exists $rinfo{$currQ}) {
+        next;
+    }
 
     # finished processing this query, print out the m4 records and empty the alignment set
     if ($prevQ != $currQ) {
         # first add a self-hit if the previous query is big enough to be a seed read
-        push @alnset, selfHit $prevQ if $seeds{$prevQ};
+        push @alnset, selfHit $prevQ if exists $seeds{$prevQ};
         emitSet @alnset;
         @alnset = ();
         $prevQ = $currQ;
@@ -166,7 +150,7 @@ while (<LA>) {
         # only collapse and add the record set if its target is a seed read, collapse the 
         # alignment record set into an alignment super-set.
         @qtp = split /:/, $prevPair;
-        if ($seeds{$qtp[1]} and not chimeric @recs) {
+        if (exists $seeds{$qtp[1]} and not chimeric @recs) {
             push @alnset, collapse @recs;
         }
 
@@ -179,9 +163,9 @@ while (<LA>) {
 }
 close LA;
 
-if ($seeds{$currT} and not chimeric @recs) {
+if (exists $seeds{$currT} and not chimeric @recs) {
     push @alnset, collapse @recs;
 }
-push @alnset, selfHit $currQ if $seeds{$currQ};
-emitSet @alnset;
+push @alnset, selfHit $currQ if exists $seeds{$currQ};
+emitSet @alnset if exists $rinfo{$currQ};
 
