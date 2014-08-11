@@ -23,6 +23,7 @@ VPATH := $(shell sed 's:^\(.*\)/.*:\1:' $(INPUT) | sort -u)
 MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' input.fofn | sort -u)
 SUBFASTA := $(MOVIES:%=filter/%.$(SUBPFX).fasta)
 SUBLENGTHS := $(SUBFASTA:%.fasta=%.lengths)
+SUBSEEDS := $(SUBLENGTHS:%.lengths=%.seeds)
 DALFILES = $(DALPFX).C0.las $(DALPFX).C1.las $(DALPFX).C2.las $(DALPFX).C3.las \
            $(DALPFX).N0.las $(DALPFX).N1.las $(DALPFX).N2.las $(DALPFX).N3.las
 
@@ -35,7 +36,7 @@ CHUNKS := $(shell seq 1 $(CHUNK_SIZE))
 SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
 BAXFOFNS := $(foreach c,$(CHUNKS),$(shell printf "input.chunk%03dof%03d.fofn" $(c) $(CHUNK_SIZE)))
 REGFOFNS := $(BAXFOFNS:input.%=filter/regions.%)
-DAZ2M4 := $(BAXFOFNS:input.%.fofn=correct/daz2m4.%.areads)
+DAZ2M4 := $(BAXFOFNS:input.%.fofn=correct/daz2m4.%.seeds)
 MAPPEDM4 := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4)
 MAPPEDM4FILT := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4.filt)
 CORRECTED := $(BAXFOFNS:input.%.fofn=correct/corrected.%.fasta)
@@ -105,7 +106,7 @@ correct/corrected.fasta : $(CORRECTED)
 correct : $(CORRECTED) ;
 
 $(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4.filt correct/seeds.m4.fofn filter/subreads.fasta
-	$(QSUB) -N corr -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 cov=6 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
+	$(QSUB) -N corr.$* -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 cov=6 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
 correct/seeds.m4.fofn : $(MAPPEDM4FILT)
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
@@ -124,26 +125,16 @@ filter/subreads.fasta : $(SUBFASTA)
 adapt : $(MAPPEDM4) ;
 
 # Yeah, I wrote it in perl ... so what?
-$(MAPPEDM4) : correct/seeds.%.m4 : correct/daz2m4.%.areads correct/dazids.lst correct/$(DALPFX).merge.las $(CUTOFF)
+$(MAPPEDM4) : correct/seeds.%.m4 : correct/daz2m4.%.seeds correct/$(DALPFX).merge.las $(SUBLENGTHS)
 	daz2m4.pl $^ > $@
 
 $(DAZ2M4) : rechunk.done ;
 
-# Arrange the alignment data for processing into HGAP chunks.  To ease querying
-# alignments, split the ids into ranges
-# daz2m4.<chunk>.areads
-rechunk.done : correct/dazids.lst
-	@mktemp -d -p $(LOCALTMP) > dir.tmp
-	@cat dir.tmp
-	awk -v tmp=$$(cat dir.tmp) '{print > sprintf("%s/daz2m4.chunk%03dof%03d.areads", tmp, ++c%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
-	@mv $$(cat dir.tmp)/* correct/
-	@rm -rf $$(cat dir.tmp) dir.tmp
-	@touch $@
-
-# daz <-> pbi ID translation
-# <daz iid> <pacb id>
-correct/dazids.lst : $(SUBFASTA)
-	awk '($$1~">"){print ++c,substr($$1,2)}' $^ > $@
+# Arrange the alignment data for processing into HGAP chunks. 
+# daz2m4.<chunk>.seeds
+rechunk.done : $(SUBSEEDS)
+	awk '{print > sprintf("correct/daz2m4.chunk%03dof%03d.seeds", ++c%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $^
+	@touch rechunk.done
 
 ##
 
@@ -166,12 +157,18 @@ $(DAZALN) : ;
 
 ##
 
-## Find seed read cutoff
+## Find seed read cutoff and generate seeds
+seeds : $(SUBSEEDS) ;
+
+$(SUBSEEDS) : %.seeds : $(CUTOFF) %.lengths 
+	awk -v cut=$$(cat $<) '($$1 >= cut){print}' $(lastword $^) > $@
+
 $(CUTOFF) : $(SUBLENGTHS)
 	sort -nrmk1,1 $^ | awk '{t+=$$1;if(t>=$(GENOME_SIZE)*30){print $$1;exit;}}' > $@
 
+# NOTE: we this also emits what should be daz id mapping table
 $(SUBLENGTHS) : filter/%.$(SUBPFX).lengths : filter/%.$(SUBPFX).fasta
-	fastalength $< | sort -nrk1,1 > $@
+	fastalength $< | awk '{print $$0, ++c}' | sort -nrk1,1 > $@
 ##
 
 ## Integration with dazzler flow, this has some explicit block enforcements
@@ -215,4 +212,4 @@ clean :
 	rm -f input.chunk*
 	rm -f $(DALPFX)*
 	rm -f rechunk.done
-	if [ -e dir.tmp ]; then rm -rf $$(cat dir.tmp); rm dir.tmp; fi;
+	rm -f chunkinput.done

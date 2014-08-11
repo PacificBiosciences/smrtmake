@@ -1,10 +1,5 @@
 #!/usr/bin/env perl
 
-my $chunkFile = shift;
-my $idMapFile = shift;
-my $lasFile = shift;
-my $cutFile = shift;
-
 sub pbidToLen {
     my $pbid = shift;
     my @v = $pbid =~ m#\d+/(\d+)_(\d+)#; 
@@ -18,11 +13,11 @@ sub selfHit {
     return "$pbidQ $pbidQ -40000 100.0000 0 0 $lenQ $lenQ 0 0 $lenQ $lenQ 0";
 }
 
-sub chimeric {
+sub wellBehaved {
     my ($qid, $tid, $strand, $minQ, undef, $minT) = split / +/, $_[0];
     my (undef, undef, undef, undef, $maxQ, undef, $maxT) = split / +/, $_[-1]; 
     
-    return $maxT < $minT;
+    return $maxT > $minT;
 }
 
 sub collapse {
@@ -32,7 +27,7 @@ sub collapse {
     #   2     19,611 c   [ 7,164.. 9,226] x [ 4,257.. 6,220] :   <    363 diffs  ( 21 trace pts)
 
     # but, there are more complex cases where alignments overlap or map to multiple locations.
-    # These are likely chimeric and should be skipped.
+    # These are likely chimeric in nature and should be skipped.
     #     7     36,114 n   [ 8,555..10,341] x [ 4,718.. 6,476] :   <    298 diffs  ( 18 trace pts)
     #     7     36,114 n   [ 8,555..12,992] x [ 4,718.. 9,166] :   <    835 diffs  ( 44 trace pts)
     #     7     36,114 n   [12,930..14,674] x [     0.. 1,722] :   <    302 diffs  ( 17 trace pts)
@@ -55,12 +50,12 @@ sub collapse {
     for my $rec (@_) {
         my @f = split / +/, $rec;
         $alnlenQ += $f[4] - $f[3];
-        $alnlenT += $f[6] - $f[5];  
+        $alnlenT += $f[6] - $f[5];
         $diffcnt += $f[7];
     }
     
     my $pbidQ = $rinfo{$qid};
-    my $pbidT = $seeds{$tid};
+    my $pbidT = $rinfo{$tid};
     my $lenQ = pbidToLen $pbidQ;
     my $lenT = pbidToLen $pbidT;
     my $s = $strand eq "c" ? 1 : 0;
@@ -75,44 +70,38 @@ sub emitSet {
                  sort { $a->[1] <=> $b->[1] } 
                  map { [$_, (split)[2]] } @_;
 
-    # XXX parameterize?
     my $count = 0;
     foreach my $rec (@sorted) {
         print "$rec\n";
-        last if ++$count > 50;
     }
 }
 
-open CUT, $cutFile;
-our $cutoff = <CUT>;
-chomp $cutoff;
+my $chunkFile = shift;
+my $lasFile = shift;
 
-our %seeds = {};
-open IDM, $idMapFile;
-while (<IDM>) {
-    chomp;
-    my ($iid, $pbid) = split;
-    my $len = pbidToLen $pbid;
-    if ($len >= $cutoff) {
-        $seeds{$iid} = $pbid;
-    }
-}
-
+# load the seeds we're responsible for
 open CHUNK, $chunkFile; 
-our %rinfo = {};
+our %seeds;
 while (<CHUNK>) {
     chomp;
-    my ($iid, $pbid) = split;
-    $rinfo{$iid} = $pbid;
+    my ($len, $pbid, $iid) = split;
+    $seeds{$iid}++;
 }
 close CHUNK;
 
-my $prevPair = "0:0:0";
-my $prevQ = 0;
-my $currQ = 0;
-my $currT = 0;
-my @recs = ();
-my @alnset = ();
+# load the the subread mapping information
+our %rinfo;
+while (my $subMapFile = shift) {
+    open SMF, $subMapFile || die "Failed to open $subMapFile: $!";
+    while (<SMF>) {
+        chomp;
+        my ($len, $pbid, $iid) = split;
+        $rinfo{$iid} = $pbid;
+    }
+    close SMF;
+}
+
+my @recset;
 open LA, "LAshow $lasFile|";
 while (<LA>) {
     # <spaces>
@@ -124,48 +113,66 @@ while (<LA>) {
     chomp;
     s/[],\[<:x]//g;
     s/\.\./ /g;
+    s/ diffs.*//;
+    s/ +/ /g;
     s/^ +//;
 
-    # 2        320 c        0  2381   1951  4455        413 diffs  ( 23 trace pts)
+    # 2 320 c 0 2381 1951 4455 413
     my @f = split;
-    # currS: strand (n = forward, c = reverse)
-    ($currQ, $currT, $currS) = @f[0..2];
-    if (not exists $rinfo{$currQ}) {
-        next;
-    }
-
-    # finished processing this query, print out the m4 records and empty the alignment set
-    if ($prevQ != $currQ) {
-        # first add a self-hit if the previous query is big enough to be a seed read
-        push @alnset, selfHit $prevQ if exists $seeds{$prevQ};
-        emitSet @alnset;
-        @alnset = ();
-        $prevQ = $currQ;
-    }
-
-    # handle the next pair for the current query
-    # each query:target pair can appear 1 or more times in the alignment set
-    my $currPair = "$currQ:$currT:$currS";
-    if ($currPair ne $prevPair) {
-        # only collapse and add the record set if its target is a seed read, collapse the 
-        # alignment record set into an alignment super-set.
-        @qtp = split /:/, $prevPair;
-        if (exists $seeds{$qtp[1]} and not chimeric @recs) {
-            push @alnset, collapse @recs;
-        }
-
-        @recs = ();
-        $prevPair = $currPair;
-    }
-
-    # always add the next alignment record to the set.
-    push @recs, $_;
+    # filter through only targets we care about
+    push @recset, $_ if exists $seeds{$f[1]};
 }
 close LA;
 
-if (exists $seeds{$currT} and not chimeric @recs) {
-    push @alnset, collapse @recs;
+# resort by target, query, qstart, qend, strand
+@recset = map { $_->[0] } 
+          sort { $a->[1] <=> $b->[1] || $a->[2] <=> $b->[2] || 
+                 $a->[3] <=> $b->[3] || $a->[4] <=> $b->[4] ||
+                 $a->[5] <=> $b->[5] } 
+          map { [$_, (split)[1,0,3,4,2]] } @recset;
+
+my $prevPair = "0:0:0";
+my $prevT = 0;
+my $currQ = 0;
+my $currT = 0;
+my @frgset;
+my @alnset;
+foreach my $rec (@recset) {
+    my @f = split / /, $rec;
+    # currS: strand (n = forward, c = reverse)
+    ($currQ, $currT, $currS) = @f[0..2];
+
+    # finished processing this target, print out the m4 records and empty the 
+    # alignment set.
+    if ($prevT != $currT and $prevT != 0) {
+        # add a self-hit
+        push @alnset, selfHit $prevT; 
+        emitSet @alnset;
+        @alnset = ();
+        $prevT = $currT;
+    }
+
+    # handle the next pair for the current target.
+    # each query:target pair can appear 1 or more times in the alignment set
+    my $currPair = "$currQ:$currT:$currS";
+    if ($currPair ne $prevPair) {
+        # only collapse and add the record set if it's well behaved.
+        if (wellBehaved @frgset) {
+            push @alnset, collapse @frgset;
+        }
+
+        @frgset = ();
+        $prevPair = $currPair;
+    }
+
+    # add the next alignment fragment to the current alignment fragment set
+    push @frgset, $rec;
+
 }
-push @alnset, selfHit $currQ if exists $seeds{$currQ};
-emitSet @alnset if exists $rinfo{$currQ};
+
+if (wellBehaved @frgset) {
+    push @alnset, collapse @frgset;
+}
+push @alnset, selfHit $currT;
+emitSet @alnset;
 
