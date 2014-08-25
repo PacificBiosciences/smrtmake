@@ -12,23 +12,47 @@ LOCALTMP ?= /scratch
 INPUT ?= input.fofn
 
 SHELL = /bin/bash
-TASKDIRS = filter correct assemble polish log
+TASKDIRS = filter correct assemble polish log blocks
 SUBPFX = subreads
-DALPFX = $(SUBPFX).$(SUBPFX)
 
 SMRTETC = $(SEYMOUR_HOME)/analysis/etc
 PWD = $(shell pwd)
 
 VPATH := $(shell sed 's:^\(.*\)/.*:\1:' $(INPUT) | sort -u)
-MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' input.fofn | sort -u)
+MOVIES := $(shell sed 's:.*/\([^.]*\).[1-3].bax.h5:\1:' $(INPUT) | sort -u)
+BAXFILES := $(shell cat $(INPUT))
 SUBFASTA := $(MOVIES:%=filter/%.$(SUBPFX).fasta)
 SUBLENGTHS := $(SUBFASTA:%.fasta=%.lengths)
 SUBSEEDS := $(SUBLENGTHS:%.lengths=%.seeds)
-DALFILES = $(DALPFX).C0.las $(DALPFX).C1.las $(DALPFX).C2.las $(DALPFX).C3.las \
-           $(DALPFX).N0.las $(DALPFX).N1.las $(DALPFX).N2.las $(DALPFX).N3.las
 
-DAZALN := $(DALFILES:%=correct/%)
-DAZALNSORT := $(DAZALN:%.las=%.S.las)
+# Dazzler block logic.  Need to know the number of blocks in order to construct
+# this properly.  Creates 2TN^2 .las files, where T = 4 threads and N = number 
+# of blocks. For perspective, arabidopsis will create 14,112 .las files.
+
+DABLOCKS ?= 1
+
+# Daligner output format: <dbname>.<block a>.<dbname>.<block b>.<strand><thread>
+
+BLOCKFMT = $(SUBPFX).%d
+BLKDONEFMT = blocks/$(BLOCKFMT)/$(BLOCKFMT)_$(BLOCKFMT).done
+DALDONE := $(shell python -c 'print " ".join(["$(BLKDONEFMT)" % (i, i, j) for i in xrange(1,$(DABLOCKS)+1) for j in xrange(i, $(DABLOCKS)+1)])')
+
+BLKOUTFMT = blocks/$(BLOCKFMT)/$(BLOCKFMT).$(BLOCKFMT)
+DAFILEBASE := $(shell python -c 'print " ".join(["$(BLKOUTFMT)" % (i, j, i) for i in xrange(1,$(DABLOCKS)+1) for j in xrange(1, $(DABLOCKS)+1)])')
+
+DALPARTS = $(bp).N0.las $(bp).N1.las $(bp).N2.las $(bp).N3.las \
+           $(bp).C0.las $(bp).C1.las $(bp).C2.las $(bp).C3.las
+DALFILES :=  $(foreach bp, $(DAFILEBASE), $(DALPARTS))
+
+# Use dazzler blocking for these steps
+BLOCKS := $(foreach b, $(shell seq 1 $(DABLOCKS)), blocks/$(SUBPFX).$(b))
+DZL1MRG := $(DAFILEBASE:%=%.las)
+DZL2MRG := $(BLOCKS:%=%.las)
+DAZRANGES := $(BLOCKS:%=%.range)
+DAZ2M4 := $(BLOCKS:blocks/$(SUBPFX).%=correct/daz2m4.%.seeds)
+MAPPEDM4 := $(DAZ2M4:correct/daz2m4.%.seeds=correct/seeds.%.m4)
+MAPPEDM4FILT := $(MAPPEDM4:%=%.filt)
+CORRECTED := $(MAPPEDM4:correct/seeds.%.m4=correct/corrected.%.fasta)
 
 # Chunks are maintained throughout workflow. Need to add some elasticity to handle
 # larger datasets
@@ -36,14 +60,9 @@ CHUNKS := $(shell seq 1 $(CHUNK_SIZE))
 SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
 BAXFOFNS := $(foreach c,$(CHUNKS),$(shell printf "input.chunk%03dof%03d.fofn" $(c) $(CHUNK_SIZE)))
 REGFOFNS := $(BAXFOFNS:input.%=filter/regions.%)
-DAZ2M4 := $(BAXFOFNS:input.%.fofn=correct/daz2m4.%.seeds)
-MAPPEDM4 := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4)
-MAPPEDM4FILT := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4.filt)
-CORRECTED := $(BAXFOFNS:input.%.fofn=correct/corrected.%.fasta)
 CMPH5 := $(BAXFOFNS:input.%.fofn=polish/aligned_reads.%.cmp.h5)
 
 CUTOFF = filter/longreads.cutoff
-QUERYFOFN = filter/subreads.fofn
 
 QSUB = qsub -S /bin/bash -cwd -b y -sync y -V -q $(QUEUE) -e $(PWD)/log/ -o $(PWD)/log/
 
@@ -113,10 +132,11 @@ correct/seeds.m4.fofn : $(MAPPEDM4FILT)
 
 filter : $(MAPPEDM4FILT) ;
 
-$(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4 
-	filterm4.py $< > $@
+$(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4
+	$(QSUB) -N filt.$* "filterm4.py $< > $@"
 
-# Minor edit to header and uppercase the bases
+# XXX: Fix this, really annoying, use fofn.  
+# Because of dextract, minor edit to header and uppercase the bases, while joining into one file
 filter/subreads.fasta : $(SUBFASTA)
 	sed '/^[^>]/ y/acgt/ACGT/;s/ RQ=.*//' $^ > $@
 ##
@@ -124,36 +144,55 @@ filter/subreads.fasta : $(SUBFASTA)
 ## The key bridgepoint: adapt daligner output to m4 format ##
 adapt : $(MAPPEDM4) ;
 
+# XXX: For some reason, this causes seemingly infinite cycle of target consideration for alignment block combinations.
+#      Need to figure out how the hell to fix it.
+#       
 # Yeah, I wrote it in perl ... so what?
-$(MAPPEDM4) : correct/seeds.%.m4 : correct/daz2m4.%.seeds correct/$(DALPFX).merge.las $(SUBLENGTHS)
-	daz2m4.pl $^ > $@
+$(MAPPEDM4) : correct/seeds.%.m4 : blocks/$(SUBPFX).%.range filter/sublengths.fofn blocks/$(SUBPFX).%.las
+	$(QSUB) -N adpt.$* "daz2m4.pl $^ > $@"
 
-$(DAZ2M4) : rechunk.done ;
+filter/sublengths.fofn : $(SUBLENGTHS)
+	sed 's:.*/\([^.]*\).[1-3].bax.h5:$(PWD)/filter/\1.subreads.lengths:' $(INPUT) | sort -u > $@
 
-# Arrange the alignment data for processing into HGAP chunks. 
-# daz2m4.<chunk>.seeds
-rechunk.done : $(SUBSEEDS)
-	awk '{print > sprintf("correct/daz2m4.chunk%03dof%03d.seeds", ++c%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $^
-	@touch rechunk.done
+ranges : $(DAZRANGES) ;
+# (low,hi]
+$(DAZRANGES) : blocks/$(SUBPFX).%.range : correct/subreads.db blocks/$(SUBPFX).% 
+	sed -nr 's/ +[0-9]+ +([0-9]+)/\1/p' $< | sed -n "$*,`expr $* + 1` p" > $@
 
 ##
 
 ## Read overlap using DALIGNER
-# XXX: Need to see how blocks affect this output
-dazaln : correct/$(DALPFX).merge.las ;
+dmerge : $(DZL2MRG) ;
 
-correct/$(DALPFX).merge.las : $(DAZALNSORT)
-	LAmerge $@ $^
+$(DZL2MRG) : $(DZL1MRG)
+	$(QSUB) -N d2m.$(@F) LAmerge $@ $(filter $(@:.las=)%,$^)
 
-$(DAZALNSORT) : correct/%.S.las : correct/%.las correct/daligner.done
-	LAsort $<
+$(DZL1MRG) : %.las : %.N0.las %.N1.las %.N2.las %.N3.las %.C0.las %.C1.las %.C2.las %.C3.las
+	$(QSUB) -N d1s.$(@F) LAsort $^
+	$(QSUB) -N d1m.$(@F) LAmerge $@ $(^:%.las=%.S.las)
+	rm -f $(^:%.las=%.S.las)
 
-correct/daligner.done : correct/$(SUBPFX).db
-	$(QSUB) -N daligner -pe smp 5 daligner -t9 $< $<
-	mv $(DALFILES) correct/
+# XXX: make sure this works properly, currently deletes even upon failure. Also, may be the
+#	   source of the problematic threaded mode file pruning.
+#	   UPDATE: leaving files around appears to avoid the thread problem.
+#     
+#.INTERMEDIATE : $(DALFILES) $(DZL1MRG)
+
+dalign : $(DALFILES) ;
+
+# daligner will output both X.Y and Y.X, arrange block pairs by target for merging.
+$(DALFILES) : $(DALDONE)
+	@if [ ! -e $@ ]; then mv `echo $@ | sed -r 's;[0-9]+(/[a-z]+.)([0-9]+);\2\1\2;'` $@;else touch $@;fi
+
+$(DALDONE) : correct/dbsplit.done | $(BLOCKS)
+	cd $(@D) && $(QSUB) -N daln.$(@F) -pe smp 5 daligner -t9 `echo $(@F) | sed 's/_\([^ ]*\).done/ \1/'`
 	touch $@
 
-$(DAZALN) : ;
+$(BLOCKS) : correct/$(SUBPFX).db | prepare
+	mkdir -p $@
+	ln -s $(PWD)/$< $@
+	ln -s $(PWD)/correct/.$(SUBPFX).idx $@
+	ln -s $(PWD)/correct/.$(SUBPFX).bps $@
 
 ##
 
@@ -161,34 +200,38 @@ $(DAZALN) : ;
 seeds : $(SUBSEEDS) ;
 
 $(SUBSEEDS) : %.seeds : $(CUTOFF) %.lengths 
-	awk -v cut=$$(cat $<) '($$1 >= cut){print}' $(lastword $^) > $@
+	awk -v cut=`cat $<` '($$1 >= cut){print}' $(lastword $^) > $@
 
 $(CUTOFF) : $(SUBLENGTHS)
 	sort -nrmk1,1 $^ | awk '{t+=$$1;if(t>=$(GENOME_SIZE)*30){print $$1;exit;}}' > $@
 
-# NOTE: we this also emits what should be daz id mapping table
+# NOTE: this also stores offsets that will eventually be used to map daz ids to pbids
 $(SUBLENGTHS) : filter/%.$(SUBPFX).lengths : filter/%.$(SUBPFX).fasta
 	fastalength $< | awk '{print $$0, ++c}' | sort -nrk1,1 > $@
+
 ##
 
 ## Integration with dazzler flow, this has some explicit block enforcements
 #  limited by the size of the daz internal read id.  All movies must be loaded
 #  independently.  After creating the database, it must be split into blocks,
-#  or chunks, if the # of reads is greater than uint16 (65,536).  This block
+#  or chunks, if the # of reads is greater than uint16 (65,536) or number of
+#  of bases is greater than some value (default 400Mbp).  Note This block
 #  scheme will not be the same as the HGAP chunk scheme, so we'll have to 
 #  manage dazzler blocks with HGAP chunks.
-# XXX: Test on large enough dataset to necessitate block splitting.
-dazdb : correct/$(SUBPFX).db
+dazdb : correct/dbsplit.done
 
-# NOTE: the order here determines how the daz internal ids get asseigned in the 
+correct/dbsplit.done : correct/$(SUBPFX).db
+	DBsplit $< && touch $@
+
+# NOTE: the order here determines how the daz internal ids get assigned in the 
 # database, important bridge for jumping between the HGAP/Dazzler worlds.
 correct/$(SUBPFX).db : $(SUBFASTA)
-	fasta2DB $@ $^
+	$(QSUB) -N f2db fasta2DB $@ $^
 
 subreads : $(SUBFASTA) ;
 
 $(SUBFASTA) : filter/%.$(SUBPFX).fasta : %.1.bax.h5 %.2.bax.h5 %.3.bax.h5 | prepare
-	dextract -s800 $^ > $@
+	$(QSUB) -N dext.$* "dextract -s800 $^ > $@"
 
 ##
 
@@ -205,11 +248,14 @@ $(BAXFOFNS) : chunkinput.done ;
 chunkinput.done : input.fofn
 	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
 	@touch $@
+
+$(BAXFILES) : ;
+
 ##
 
 clean :
 	rm -rf $(TASKDIRS)
 	rm -f input.chunk*
 	rm -f $(DALPFX)*
-	rm -f rechunk.done
+	rm -f rechunk*.done
 	rm -f chunkinput.done

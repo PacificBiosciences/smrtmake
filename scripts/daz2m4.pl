@@ -76,33 +76,46 @@ sub emitSet {
     }
 }
 
-my $chunkFile = shift;
+my $rangeFile = shift;
+my $mapFofn = shift;
 my $lasFile = shift;
 
 # load the seeds we're responsible for
-open CHUNK, $chunkFile; 
-our %seeds;
-while (<CHUNK>) {
-    chomp;
-    my ($len, $pbid, $iid) = split;
-    $seeds{$iid}++;
-}
-close CHUNK;
+open RANGE, $rangeFile || die "Failed to open $rangeFile: $!";
+my @range = <RANGE>;
+close RANGE;
 
 # load the the subread mapping information
+open MFS, $mapFofn || die "Failed to open $mapFofn: $!";
+my @mapFileset = <MFS>;
+close MFS;
+chomp @mapFileset;
+our %seeds;
 our %rinfo;
-while (my $subMapFile = shift) {
-    open SMF, $subMapFile || die "Failed to open $subMapFile: $!";
-    while (<SMF>) {
+my $iidOffs = 0;
+foreach my $mapFile (@mapFileset) {
+    open MF, $mapFile || die "Failed to open $mapFile: $!";
+    my $recCount = 0;
+    while (<MF>) {
         chomp;
-        my ($len, $pbid, $iid) = split;
+        my ($len, $pbid, $tid) = split;
+        my $iid = $tid + $iidOffs;
         $rinfo{$iid} = $pbid;
+        $seeds{$iid}++ if $iid <= $range[1] and $iid > $range[0];
+        $recCount++;
     }
-    close SMF;
+    close MF;
+    $iidOffs += $recCount;
 }
 
 my @recset;
-open LA, "LAshow $lasFile|";
+my $prevPair = "0:0:0";
+my $prevT = 0;
+my $currQ = 0;
+my $currT = 0;
+my @frgset;
+my @alnset;
+open LA, "LAshow $lasFile | sort -sk2,2|";
 while (<LA>) {
     # <spaces>
     # subreads.merge: 5,688,372 records
@@ -119,37 +132,22 @@ while (<LA>) {
 
     # 2 320 c 0 2381 1951 4455 413
     my @f = split;
-    # filter through only targets we care about
-    push @recset, $_ if exists $seeds{$f[1]};
-}
-close LA;
-
-# resort by target, query, qstart, qend, strand
-@recset = map { $_->[0] } 
-          sort { $a->[1] <=> $b->[1] || $a->[2] <=> $b->[2] || 
-                 $a->[3] <=> $b->[3] || $a->[4] <=> $b->[4] ||
-                 $a->[5] <=> $b->[5] } 
-          map { [$_, (split)[1,0,3,4,2]] } @recset;
-
-my $prevPair = "0:0:0";
-my $prevT = 0;
-my $currQ = 0;
-my $currT = 0;
-my @frgset;
-my @alnset;
-foreach my $rec (@recset) {
-    my @f = split / /, $rec;
-    # currS: strand (n = forward, c = reverse)
     ($currQ, $currT, $currS) = @f[0..2];
+
+    # screen out non-seed targets
+    next unless exists $seeds{$currT};
 
     # finished processing this target, print out the m4 records and empty the 
     # alignment set.
-    if ($prevT != $currT and $prevT != 0) {
-        # add a self-hit
-        push @alnset, selfHit $prevT; 
-        emitSet @alnset;
-        @alnset = ();
+    if ($prevT != $currT) {
+        if ($prevT != 0) {
+            # add a self-hit
+            push @alnset, selfHit $prevT; 
+            emitSet @alnset;
+        }
         $prevT = $currT;
+        @alnset = ();
+        @frgset = ();
     }
 
     # handle the next pair for the current target.
@@ -166,9 +164,9 @@ foreach my $rec (@recset) {
     }
 
     # add the next alignment fragment to the current alignment fragment set
-    push @frgset, $rec;
-
+    push @frgset, $_;
 }
+close LA;
 
 if (wellBehaved @frgset) {
     push @alnset, collapse @frgset;
