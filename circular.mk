@@ -40,4 +40,4 @@ $(FIDS) : ;
 clean :
 	@rm -rf $(ODIR)
 
-#.INTERMEDIATE : $(EOFF) $(FAS) $(BEGS) $(ENDS) $(M4S)
+.INTERMEDIATE : $(EOFF) $(FAS) $(BEGS) $(ENDS) $(M4S)
