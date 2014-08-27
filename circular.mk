@@ -1,3 +1,24 @@
+# Given a polished assembly file (uncompressed), identify those that appear 
+# circular. 
+#
+# > ls
+#   circular.mk 	polished_assembly.fasta
+# > make -sf circular.mk
+#   unitig_2: looks circular
+#   unitig_4: looks circular
+#   unitig_1: looks circular
+#
+# You can also override the following defaults from the command line:
+# 	FASTA: Location of the polished assembly (default ./polished_assembly.fasta)
+# 	OVLSIZE: Determines how much sequence is used to detect an overlap.
+# 	         Sequences < 2*OVLSIZE are ignored.
+#
+# Example:
+# > make -sf circular.mk FASTA=/path/to/polished_assembly.fasta
+#
+# NOTE: This only detects perfectly circular assemblies.  Some imperfect 
+# assemblies that may be circular will likely be missed.
+
 FASTA ?= polished_assembly.fasta
 OVLSIZE ?= 20000
 ODIR = circularize
