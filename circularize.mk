@@ -2,8 +2,8 @@
 # circular. 
 #
 # > ls
-#   circular.mk 	polished_assembly.fasta
-# > make -sf circular.mk
+#   circularize.mk 	polished_assembly.fasta
+# > make -sf circularize.mk
 #   unitig_2: looks circular
 #   unitig_4: looks circular
 #   unitig_1: looks circular
@@ -14,7 +14,7 @@
 # 	         Sequences < 2*OVLSIZE are ignored.
 #
 # Example:
-# > make -sf circular.mk FASTA=/path/to/polished_assembly.fasta
+# > make -sf circularize.mk FASTA=/path/to/polished_assembly.fasta
 #
 # NOTE: This only detects perfectly circular assemblies.  Some imperfect 
 # assemblies that may be circular will likely be missed.
