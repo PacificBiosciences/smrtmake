@@ -23,7 +23,7 @@ on other cluster setups with a little modification.
 Quick Links
 -----------
 
-[Resequencing] (#reseq)
+[Resequencing] (#reseq)  
 [HGAP3] (#hgap3)
 
 Versions
