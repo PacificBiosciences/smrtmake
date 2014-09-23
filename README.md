@@ -20,6 +20,12 @@ Some downsides.
 **NOTE**: These have only been tested on SGE clusters. You can probably find ways to run 
 on other cluster setups with a little modification.
 
+Quick Links
+-----------
+
+[Resequencing] (#reseq)
+[HGAP3] (#hgap3)
+
 Versions
 --------
 
@@ -48,14 +54,41 @@ It can also be parallelized using the '-j' option to *make*
 
     > make -j 8
 
+Some people may just want to keep the makefiles in a central location (i.e., treat 
+it like code).  In that case you'll have to supply the '-f' option to make and provide 
+the full path to the make file.
+
+    > make -f </path/to/file.mk>
+
+If the makefile includes another makefile (e.g., reseq.mk includes chunk.mk), then 
+you'll also need to include the '-I' option to specify the directory where it resides. 
+Using the previous example:
+
+    > make -f </path/to/file.mk> -I </directory/containing/included/makefiles>
+
+The reseq.mk file falls into this category.  So if you just cloned the repository and 
+wanted to 
+
 **NOTE:** There are some assumptions builtin to this workflow that may not hold 
 in your environment, e.g., metadata.xml file locations.  While fixable, it's not 
 always obvious what you need to do.  Send me an email and I can try to help you 
 get unstuck.
 
+### chunk.mk
 
-hgap3.mk
---------
+A simple recipe for splitting the input.fofn file into chunks that can be maintained 
+in other makefiles.  This is included in other makefiles here, so you'll probably want 
+to include this.
+
+###<a name="reseq"/> reseq.mk
+
+Runs the resequencing workflow, which consists of filter, mapping and quiver consensus. 
+You'll need to specify the location of a reference and a File-Of-Filenames (FOFN) at 
+minimum. This make file includes chunk.mk, so you'll need to have that in your path (see 
+the section on 'Running')
+
+
+### <a name="hgap3"/> hgap3.mk
 
 HGAP.3 workflow tuned for larger genomes.  It doesn't generate reports (though they may 
 be added in the future) and the output is organized much differently, but better IMHO, 
