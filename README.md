@@ -25,6 +25,7 @@ Quick Links
 
 [Resequencing] (#reseq)  
 [HGAP3] (#hgap3)
+[Circularize] (#circ)
 
 Versions
 --------
@@ -87,6 +88,28 @@ You'll need to specify the location of a reference and a File-Of-Filenames (FOFN
 minimum. This make file includes chunk.mk, so you'll need to have that in your path (see 
 the section on 'Running')
 
+###<a name="circ"/> circularize.mk
+
+Given a polished assembly file (uncompressed), identify those that appear 
+circular. 
+
+    > ls
+      circularize.mk 	polished_assembly.fasta
+    > make -sf circularize.mk
+      unitig_2: looks circular
+      unitig_4: looks circular
+      unitig_1: looks circular
+
+You can also override the following defaults from the command line:
+	FASTA: Location of the polished assembly (default ./polished_assembly.fasta)
+	OVLSIZE: Determines how much sequence is used to detect an overlap.
+ 	         Sequences < 2 x OVLSIZE are ignored (default 20000)
+
+Example:
+    > make -sf circularize.mk FASTA=/path/to/polished_assembly.fasta
+
+NOTE: This only detects perfectly circular assemblies.  Some imperfect 
+assemblies that may be circular will likely be missed.
 
 ### <a name="hgap3"/> hgap3.mk
 
