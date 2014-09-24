@@ -24,7 +24,7 @@ Quick Links
 -----------
 
 [Resequencing] (#reseq)  
-[HGAP3] (#hgap3)
+[HGAP3] (#hgap3)  
 [Circularize] (#circ)
 
 Versions
