@@ -16,6 +16,8 @@ sub selfHit {
 sub wellBehaved {
     my ($qid, $tid, $strand, $minQ, undef, $minT) = split / +/, $_[0];
     my (undef, undef, undef, undef, $maxQ, undef, $maxT) = split / +/, $_[-1]; 
+
+    my $pbidQ = $rinfo{$qid};
     
     return $maxT > $minT;
 }
@@ -76,37 +78,22 @@ sub emitSet {
     }
 }
 
-my $rangeFile = shift;
-my $mapFofn = shift;
+my $block = shift;
+my $readFile = shift;
 my $lasFile = shift;
 
-# load the seeds we're responsible for
-open RANGE, $rangeFile || die "Failed to open $rangeFile: $!";
-my @range = <RANGE>;
-close RANGE;
-
 # load the the subread mapping information
-open MFS, $mapFofn || die "Failed to open $mapFofn: $!";
-my @mapFileset = <MFS>;
-close MFS;
-chomp @mapFileset;
+open RF, $readFile || die "Failed to open $readFile: $!";
 our %seeds;
 our %rinfo;
 my $iidOffs = 0;
-foreach my $mapFile (@mapFileset) {
-    open MF, $mapFile || die "Failed to open $mapFile: $!";
-    my $recCount = 0;
-    while (<MF>) {
-        chomp;
-        my ($len, $pbid, $tid) = split;
-        my $iid = $tid + $iidOffs;
-        $rinfo{$iid} = $pbid;
-        $seeds{$iid}++ if $iid <= $range[1] and $iid > $range[0];
-        $recCount++;
-    }
-    close MF;
-    $iidOffs += $recCount;
+while (<RF>) {
+    chomp;
+    my ($blk, $iid, $pbid, $seed) = split;
+    $rinfo{$iid} = $pbid;
+    $seeds{$iid}++ if $seed and $blk == $block;
 }
+close RF;
 
 my @recset;
 my $prevPair = "0:0:0";
@@ -115,7 +102,7 @@ my $currQ = 0;
 my $currT = 0;
 my @frgset;
 my @alnset;
-open LA, "LAshow $lasFile | sort -sk2,2|";
+open LA, "LAshow $lasFile | sort -sk2,2 -T/net/usmp-lusnfs00/PACBIO/jdrake |";
 while (<LA>) {
     # <spaces>
     # subreads.merge: 5,688,372 records
@@ -155,7 +142,7 @@ while (<LA>) {
     my $currPair = "$currQ:$currT:$currS";
     if ($currPair ne $prevPair) {
         # only collapse and add the record set if it's well behaved.
-        if (wellBehaved @frgset) {
+        if ($#frgset > -1 && wellBehaved @frgset) {
             push @alnset, collapse @frgset;
         }
 
@@ -168,7 +155,7 @@ while (<LA>) {
 }
 close LA;
 
-if (wellBehaved @frgset) {
+if ($#frgset > -1 && wellBehaved @frgset) {
     push @alnset, collapse @frgset;
 }
 push @alnset, selfHit $currT;
