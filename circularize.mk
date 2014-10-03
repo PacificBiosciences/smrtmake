@@ -32,7 +32,7 @@ FAS  := $(FIDS:%=$(ODIR)/%.fa)
 M4S  := $(FIDS:%=$(ODIR)/%.m4)
 CIRC := $(FIDS:%=%.circ)
 
-all : $(CIRC)
+all : $(CIRC) clean
 
 prepare :
 	@mkdir -p $(ODIR)
