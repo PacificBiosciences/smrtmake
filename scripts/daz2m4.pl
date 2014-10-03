@@ -10,7 +10,7 @@ sub selfHit {
     my $qid = shift;
     my $pbidQ = $rinfo{$qid};
     my $lenQ = pbidToLen $pbidQ;
-    return "$pbidQ $pbidQ -40000 100.0000 0 0 $lenQ $lenQ 0 0 $lenQ $lenQ 0";
+    return "$qid $qid -40000 100.0000 0 0 $lenQ $lenQ 0 0 $lenQ $lenQ 0";
 }
 
 sub wellBehaved {
@@ -64,7 +64,7 @@ sub collapse {
     my $alndiff = abs($alnlenQ - $alnlenT);
     my $pctid = sprintf "%.4f", (1 - ($diffcnt + $alndiff) / $alnlenQ) * 100;
     my $score = $alnlenQ;
-    return "$pbidQ $pbidT -$score $pctid 0 $minQ $maxQ $lenQ $s $minT $maxT $lenT 0";
+    return "$qid $tid -$score $pctid 0 $minQ $maxQ $lenQ $s $minT $maxT $lenT 0";
 }
 
 sub emitSet {
@@ -73,7 +73,8 @@ sub emitSet {
                  map { [$_, (split)[2]] } @_;
 
     my $count = 0;
-    foreach my $rec (@sorted) {
+    # take only the first 200 alignments
+    foreach my $rec (grep {$_} @sorted[0..198]) {
         print "$rec\n";
     }
 }
@@ -102,7 +103,8 @@ my $currQ = 0;
 my $currT = 0;
 my @frgset;
 my @alnset;
-open LA, "LAshow $lasFile | sort -sk2,2 -T/net/usmp-lusnfs00/PACBIO/jdrake |";
+
+open LA, "LAshow $lasFile | sort -sk2,2 -T/lustre/archive/tmp |";
 while (<LA>) {
     # <spaces>
     # subreads.merge: 5,688,372 records

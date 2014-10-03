@@ -5,11 +5,13 @@ alignments. For use in the pre-assembler dagcon workflow.
 
 import sys
 import heapq
+import logging
+import random
 import string # pylint: disable=W0402
+import subprocess
 from itertools import ifilter
 from collections import namedtuple, defaultdict
 import numpy as np
-from pbcore.io import BaxH5Reader
 
 # qname tname score pctsimilarity qstrand qstart qend qseqlength tstrand tstart
 # ... tend tseqlength mapqv
@@ -80,7 +82,7 @@ def bestn_true(recstr, myq):
     """Checks if the record falls inside bestn (used when blasr is chunked)"""
     rec = __tuplfy__(recstr.split())
     rate = rating(rec)
-    return rate in myq[rec.qname[32:]].top
+    return rate in myq[rec.qname].top
 
 
 class AlnLimiter(object): # pylint: disable=R0903
@@ -117,24 +119,37 @@ class TopAlignments(object): # pylint: disable=R0903
         """
         heapq.heappushpop(self.top, aln)
 
+def get_seqs(dbpath, iidset):
+    """Returns the sequence for the given dazzler-assigned internal id, 
+    either from the cache or dazzler DB.
+    """
+    args = ['-U', dbpath] + list(iidset)
+    show = subprocess.check_output(["DBshow"] + args)
+    seqs = [x[x.index('\n')+1:].replace('\n','') for x in show.split('>')[1:]]
+            
+    return dict(zip(iidset, seqs))
 
 def main(): # pylint: disable=R0914
     """Drives the program"""
-    _, mym4, allm4, basfofn, rgnfofn, TopAlignments.bestn = sys.argv
+    _, mym4, allm4, dbpath, TopAlignments.bestn = sys.argv
     TopAlignments.bestn = int(TopAlignments.bestn)
 
     # tracks bestn
     my_queries = defaultdict(TopAlignments)
     my_m4recs = []
 
+    logfmt = '%(asctime)s %(message)s'
+    logging.basicConfig(format=logfmt, level=logging.INFO)
+
     # load my m4 chunk
+    logging.info("Loading %s", mym4)
     m4h = open(mym4)
     rec_add = my_m4recs.append
     for line in m4h:
         flds = parse_m4(line)
         rec = __tuplfy__(flds)
         rate = rating(rec)
-        my_queries[rec.qname[32:]].add(rate)
+        my_queries[rec.qname].add(rate)
         rec_add(' '.join(flds))
 
     m4h.close()
@@ -143,67 +158,64 @@ def main(): # pylint: disable=R0914
     if mym4 != allm4:
         # assuming fofn here
         m4files = [x.rstrip() for x in open(allm4) if x.rstrip() != mym4]
+        
+        # Large number of blocks makes IO prohibitive, take 'large enough' 
+        # random subsample to find bestn.
+        if len(m4files) > 30:
+            m4files = random.sample(m4files, 30)
+
         for m4f in m4files:
+            logging.info("Loading %s", m4f)
             m4h = open(m4f)
             for recstr in m4h:
                 rec = __tuplfy__(parse_m4(recstr))
-                if rec.qname[32:] in my_queries:
+                if rec.qname in my_queries:
                     rate = rating(rec)
-                    my_queries[rec.qname[32:]].add(rate)
+                    my_queries[rec.qname].add(rate)
             m4h.close()
 
         # remove alignments that fall outside of bestn
         my_m4recs[:] = [x for x in my_m4recs if bestn_true(x, my_queries)]
 
+    logging.info("Initial sort")
     # sort by target name/score
     sort_targ_score(my_m4recs)
 
+    logging.info("Coverage-based scoring")
     # rescore based on coverage
     rescore(my_m4recs)
 
+    logging.info("Second sort")
     # sort one more time be new score
     sort_targ_score(my_m4recs)
 
+    logging.info("Limiting alignments to %d", TopAlignments.bestn)
     # take a max number of alignments for each target
     limiter = AlnLimiter()
     my_m4recs[:] = [x for x in ifilter(limiter, my_m4recs)]
 
-    # load only related sequences
-    seqs = {}
-    basfiles = open(basfofn).read().splitlines()
-    rgnfiles = open(rgnfofn).read().splitlines()
-    for bas, rgn in zip(basfiles,rgnfiles):
-        reader = BaxH5Reader(bas, rgn)
-        for sr in reader.subreads():
-            if sr.readName[32:] in my_queries:
-                seqs[sr.readName] = sr.basecalls() 
-
-    # may or may not help
-    del my_queries
-
     # generate pre-alignments
-    for recstr in my_m4recs:
-        rec = __tuplfy__(recstr.split())
+    logging.info("Generate pre-alignments")
+    nrecs = len(my_m4recs)
+    for offs in xrange(0, nrecs, 1000):
+        recs = [__tuplfy__(x.split()) for x in my_m4recs[offs:offs+1000]]
+        iidset = set([x[0] for x in recs]) | set([x[1] for x in recs])
+        seqs = get_seqs(dbpath, iidset)
 
-        # Bug 24538, rare case missing self hit
-        if rec.tname not in seqs:
-            msg = "Warning: skipping query %s target %s\n"
-            sys.stderr.write(msg % (rec.qname, rec.tname))
-            continue
+        for rec in recs:
+            qst = int(rec.qstart)
+            qnd = int(rec.qend)
+            qseq = seqs.get(rec.qname)[qst:qnd]
+            strand = '-' if rec.tstrand == '1' else '+'
+            tst = int(rec.tstart)
+            tnd = int(rec.tend)
+            if strand == '+':
+                tseq = seqs.get(rec.tname)[tst:tnd]
+            else:
+                tseq = seqs.get(rec.tname).translate(__rc__)[::-1][tst:tnd]
 
-        qst = int(rec.qstart)
-        qnd = int(rec.qend)
-        qseq = seqs[rec.qname][qst:qnd]
-        strand = '-' if rec.tstrand == '1' else '+'
-        tst = int(rec.tstart)
-        tnd = int(rec.tend)
-        if strand == '+':
-            tseq = seqs[rec.tname][tst:tnd]
-        else:
-            tseq = seqs[rec.tname].translate(__rc__)[::-1][tst:tnd]
-
-        print ' '.join([rec.qname, rec.tname, strand,
-                       rec.tseqlength, str(tst), str(tnd), qseq, tseq])
+            print ' '.join([rec.qname, rec.tname, strand,
+                           rec.tseqlength, str(tst), str(tnd), qseq, tseq])
 
 if __name__ == '__main__':
     sys.exit(main())
