@@ -4,31 +4,33 @@
 
 SHELL                   := /bin/bash
 PWD                      = $(shell pwd)
-QUEUE                    = primary
+QUEUE                    =
 
 #
 # Options
 #
-OUTPUT                  ?= MyCCS
+OUTPUT                  ?= Output
 INPUT                   ?= input.fofn
-CCS_OPTIONS             ?= --minPredictedAccuracy=0
+CCS_OPTIONS             ?= -v --minPredictedAccuracy=0
 CHEMISTRY_OVERRIDE      ?=
 OUTPUT_CSV              ?= --csv
 REFERENCE               ?=
+PARAMETERS_FILE         ?=
 
 #
 # Commands
 #
-QSUB                     = qsub -cwd -b y -sync y -V -q $(QUEUE) -e log/ -o log/
+QSUB                     = qsub -cwd -b y -sync y -V -e log/ -o log/
 QSUB.1                   = $(QSUB) -pe smp 1
 QSUB.4                   = $(QSUB) -pe smp 4
 QSUB.8                   = $(QSUB) -pe smp 8
 
-CCS                      = $(QSUB.8) ConsensusTools.sh CircularConsensus -n 8 $(CCS_OPTIONS) $(CHEMISTRY_OVERRIDE) $(OUTPUT_CSV)
-MAP                      = $(QSUB.8) pbalign --nproc 8 --forQuiver
+CCS                      = $(QSUB.8) ConsensusTools.sh CircularConsensus -n 8 $(CCS_OPTIONS) $(PARAMETERS_FILE) $(CHEMISTRY_OVERRIDE) $(OUTPUT_CSV)
+
+
+MAPPING_OPTIONS          =
+MAP                      = $(QSUB.8) pbalign --nproc 8 $(MAPPING_OPTIONS)
 MAP_CCS                  = $(MAP) --useccs=useccsdenovo
-
-
 
 #
 # Setup before rule execution.  Note we make an assumption that the
@@ -43,20 +45,24 @@ BAX_FILES               := $(shell cat $(INPUT) | xargs -n1 basename | sort | un
 # Rules
 #
 CCS_OUTPUT              := $(BAX_FILES:%.bax.h5=$(OUTPUT)/%.ccs.h5)
-REPORT_OUTPUT           := $(BAX_FILES:%.bax.h5=$(OUTPUT)/%.report)
-MAP_OUTPUT              := $(CCS_OUTPUT:$(OUTPUT)/%.ccs.h5=$(OUTPUT)/%.cmp.h5)
+MAP_OUTPUT              := $(BAX_FILES:%.bax.h5=$(OUTPUT)/%.subreads.cmp.h5)
+MAP_CCS_OUTPUT          := $(CCS_OUTPUT:$(OUTPUT)/%.ccs.h5=$(OUTPUT)/%.ccs.cmp.h5)
 
 $(OUTPUT)/%.ccs.h5 : %.bax.h5
 	$(CCS) -o $(OUTPUT) $<
 
-$(OUTPUT)/%.cmp.h5 : $(OUTPUT)/%.ccs.h5
+$(OUTPUT)/%.subreads.cmp.h5 : %.bax.h5
 	$(MAP) $< $(REFERENCE) $@
+
+$(OUTPUT)/%.ccs.cmp.h5 : $(OUTPUT)/%.ccs.h5
+	$(MAP_CCS) $< $(REFERENCE) $@
 
 ccs: $(CCS_OUTPUT)
 
 map: $(MAP_OUTPUT)
 
-all: map
+map-ccs: $(MAP_CCS_OUTPUT)
 
-.PHONY: map ccs
+all: map map-ccs
 
+.PHONY: map ccs map-ccs all
