@@ -45,13 +45,10 @@ assembly : polish/polished_assembly.fasta | prepare
 
 ## Assembly polishing ##
 
-polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference cmph5_chemistry_loaded
+polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference 
 	$(QSUB) -N polish -pe smp $(NPROC) variantCaller.py -P $(SMRTETC)/algorithm_parameters/2014-03 \
 	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o polish/corrections.gff \
 	-o $@ -o $(@:.fasta=.fastq.gz)
-
-cmph5_chemistry_loaded : filter/chemistry_mapping.xml polish/aligned_reads.cmp.h5
-	loadSequencingChemistryIntoCmpH5.py --xml $< --h5 $(word 2,$^) && touch chemistry_loaded
 
 polish/aligned_reads.cmp.h5 : $(CMPH5)
 	assertCmpH5NonEmpty.py --debug $^
@@ -59,7 +56,7 @@ polish/aligned_reads.cmp.h5 : $(CMPH5)
 	#h5repack -f GZIP=1 $@ $@_TMP && mv $@_TMP $@
 
 $(CMPH5) : polish/aligned_reads.%.cmp.h5 : input.%.fofn filter/regions.%.fofn | polish/reference
-	$(QSUB) -N res.$* -pe smp $(NPROC) "pbalign.py $< $| $@ --seed=1 --minAccuracy=0.75 --minLength=50 --algorithmOptions=\"-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0\" --hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^) && loadPulses $< $@ -metrics DeletionQV,IPD,InsertionQV,PulseWidth,QualityValue,MergeQV,SubstitutionQV,DeletionTag -byread"
+	$(QSUB) -N res.$* -pe smp $(NPROC) "pbalign $< $| $@ --forQuiver --seed=1 --minAccuracy=0.75 --minLength=50 --algorithmOptions=\"-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0\" --hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^) && loadPulses $< $@ -metrics DeletionQV,IPD,InsertionQV,PulseWidth,QualityValue,MergeQV,SubstitutionQV,DeletionTag -byread"
 
 polish/reference : assemble/draft_assembly.fasta
 	referenceUploader --skipIndexUpdate -c -n "reference" -p polish -f $<  --saw="sawriter -blt 8 -welter" --samIdx="samtools faidx"
@@ -146,13 +143,6 @@ $(REGFOFNS) : filter/regions.%.fofn : input.%.fofn | prepare
 	$(QSUB) -N filt.$* filter_plsh5.py --filter='MinReadScore=0.80,MinSRL=500,MinRL=100' \
 	--trim='True' --outputDir=filter --outputFofn=$@ $<
 
-filter/chemistry_mapping.xml : filter/movie_metadata
-	makeChemistryMapping.py --metadata=filter/movie_metadata --output=filter/chemistry_mapping.xml --mapping_xml=$(SMRTETC)/algorithm_parameters/2013-09/mapping.xml
-
-filter/movie_metadata : input.fofn
-	mkdir -p $@
-	sed 's#\(.*\)Analysis_Results/\(m[^\.]*\).*#\1\2.metadata.xml#' $< | sort -u | xargs ln -s -t $@
-
 ##
 
 ## Initial chunking ##
@@ -164,5 +154,4 @@ $(BAXFOFNS) : input.fofn
 
 clean :
 	rm -rf $(TASKDIRS)
-	rm -f chemistry_loaded
 	rm -f input.chunk*
