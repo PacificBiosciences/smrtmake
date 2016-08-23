@@ -49,11 +49,11 @@ ${subreads}: subreads.fasta.gz
 
 # get seed read cutoff
 length.cutoff: ${subreads}
-	fastalength $< | sort -nrmk1,1 | awk '{t+=$$1;if(t>=${genome_size}*30){print $$1;exit;}}' > $@
+	fastalength $< | sort -nrk1,1 | awk '{t+=$$1;if(t>=${genome_size}*30){print $$1;exit;}}' > $@
 	
 # partition seed (long) reads
 longreads.fasta: length.cutoff
-	fastalength $< | awk -v len=$$(cat $<) '($$1<len){print $$2}' | fastaremove ${subreads} stdin > $@
+	fastalength ${subreads} | awk -v len=$$(cat $<) '($$1<len){print $$2}' | fastaremove ${subreads} stdin > $@
 
 # overlap seeds against all reads
 overlaps.m4: threads = 24
