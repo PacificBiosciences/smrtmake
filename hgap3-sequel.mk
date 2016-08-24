@@ -75,7 +75,7 @@ corrected.fq: corrected.fa
 utg.spec: corrected.fa
 	runCASpecWriter.py  -vv --bitTable=${smrtetc}/celeraAssembler/bitTable \
 	--interactiveTmpl=${smrtetc}/cluster/SGE/interactive.tmpl \
-	--smrtpipeRc=${smrtetc}/smrtpipe.rc --genomeSize=5000000 --defaultFrgMinLen=500 \
+	--smrtpipeRc=${smrtetc}/smrtpipe.rc --genomeSize=${genome_size} --defaultFrgMinLen=500 \
 	--xCoverage=20 --ovlErrorRate=0.06 --ovlMinLen=40 --merSize=14 --corrReadsFasta=$< \
 	--specOut=$@ --sgeName=utg --gridParams="useGrid:0, scriptOnGrid:0, frgCorrOnGrid:0, ovlCorrOnGrid:0" \
 	--maxSlotPerc=1 ${smrtetc}/celeraAssembler/unitig.spec
