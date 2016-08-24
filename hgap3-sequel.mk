@@ -7,6 +7,10 @@
 # It is slow, since it doesn't have any process-level parallelization defined, 
 # but is useable for bacterial-sized genomes.
 # Threads are defined at individual target levels, change to suit your needs.
+# Please take the time to check the parameters prior to running.
+#
+# Example usage:
+# > make -f hgap3-sequel.mk xml=dataset.xml genome_size=10000000
 
 ### Parameters for adjustment
 
@@ -85,7 +89,7 @@ utg.frg: corrected.fq
 
 utg.finished: threads = 16
 utg.finished: utg.spec utg.frg
-	${qsub} -pe smp 16 runCA -d assemble -p asm -s $^
+	${qsub} runCA -d assemble -p asm -s $^
 	touch $@
 
 draft.fasta: threads = 4
@@ -94,16 +98,18 @@ draft.fasta: utg.finished
 	| awk 'BEGIN{t=0}$$1=="numFrags"{if($$2>1){print t, $$2}t++}' | sort -nrk2,2 > assemble/unitig.lst
 	${qsub} 'tmp=$$(mktemp -d -p /scratch); tmp=$$tmp cap=${PWD}/assemble/asm utg=${PWD}/assemble/unitig.lst cns=${PWD}/$@ nproc=${threads} pbutgcns_wf.sh'
 
-# prepare for polishing
+# Prepare for polishing, attempt to prevent xmount delay issues. If this fails
+# with a 'file not found' issue, you can typically just re-run the make script 
+# and it will pick up where it left off.
 draft.fasta.fai: draft.fasta
-	samtools faidx $<
+	ls > /dev/null && samtools faidx $<
 
 draft.mapped.bam: threads = 24
 draft.mapped.bam: ${xml} draft.fasta
 	${qsub} ${bin3xx}/blasr $^ --nproc ${threads} --bestn 1 --maxScore -1000 --hitPolicy randombest --bam --out $@
 
 draft.sorted.bam: draft.mapped.bam
-	samtools sort $< $(basename $@)
+	ls > /dev/null && samtools sort $< $(basename $@)
 
 draft.sorted.bam.pbi: draft.sorted.bam
 	${bin3xx}/pbindex $<
@@ -113,6 +119,7 @@ polished.fasta: threads = 16
 polished.fasta: draft.fasta draft.sorted.bam draft.fasta.fai draft.sorted.bam.pbi
 	${qsub} ${bin3xx}/arrow -j ${threads} -o $@ --referenceFilename $(wordlist 1,2,$^)
 
+# Removes *all* assembly artifact. Use with caution.
 clean:
 	rm -f subreads.fasta	
 	rm -f subreads.fasta.gz
@@ -124,3 +131,4 @@ clean:
 	rm -f utg.*
 	rm -rf assemble/
 	rm -f polished.fasta
+	rm -f polished.fasta.*
