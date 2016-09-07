@@ -39,7 +39,9 @@ SHELL := /bin/bash
 fname := $(lastword ${MAKFILE_LIST})
 subreads := subreads.fasta
 
-all: polished.fasta
+reports := preassembler_report.json polished_report.json
+
+all: polished.fasta.gz ${reports}
 
 ${xml}: 
 	@echo "USAGE: make -f ${fname} xml=<path to subreadset.xml>" && exit 1
@@ -72,6 +74,9 @@ overlaps.filt.m4: overlaps.m4
 corrected.fa: threads = 15
 corrected.fa: overlaps.filt.m4
 	${qsub} -v mym4=$<,allm4=$<,subreads=${subreads},cov=6,tmp=/scratch pbdagcon_wf.sh
+
+preassembler_report.json: length.cutoff ${subreads} longreads.fasta corrected.fa
+	preassembly_report.py --length-cutoff `cat $<` $(filter-out $<,$^) $@
 
 corrected.fq: corrected.fa
 
@@ -115,9 +120,19 @@ draft.sorted.bam.pbi: draft.sorted.bam
 	${bin3xx}/pbindex $<
 
 # polish
-polished.fasta: threads = 16
-polished.fasta: draft.fasta draft.sorted.bam draft.fasta.fai draft.sorted.bam.pbi
-	${qsub} ${bin3xx}/arrow -j ${threads} -o $@ --referenceFilename $(wordlist 1,2,$^)
+polished.fasta.gz: threads = 16
+polished.fasta.gz: draft.fasta draft.sorted.bam draft.fasta.fai draft.sorted.bam.pbi
+	${qsub} ${bin3xx}/arrow -j ${threads} -o $@ -o tmp.fastq.gz --referenceFilename $(wordlist 1,2,$^)
+
+tmp.fastq.gz: polished.fasta.gz
+polished.fastq.gz: tmp.fastq.gz
+	gunzip -c $< | sed 's/arrow/quiver:arrow/' | gzip > $@
+
+alignment_summary.gff: draft.sorted.bam draft.fasta 
+	${bin3xx}/python -m pbreports.report.summarize_coverage.summarize_coverage $^ $@
+
+polished_report.json: alignment_summary.gff polished.fastq.gz
+	pbreport.py polished-assembly . $@ $^
 
 # Removes *all* assembly artifact. Use with caution.
 clean:
@@ -132,3 +147,7 @@ clean:
 	rm -rf assemble/
 	rm -f polished.fasta
 	rm -f polished.fasta.*
+	rm -f alignment_summary.gff
+	rm -f *.png
+	rm -f *.json
+	rm -f ${reports}
