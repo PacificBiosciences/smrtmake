@@ -20,7 +20,7 @@ xml ?= undefined
 
 # You must have smrtanalysis 2.3.0 sourced and in your path for this to work.
 # Modify path to respective bin of smrtanalysis 3.x.x
-bin3xx := /pbi/dept/secondary/builds/mainline/current_smrttools_prebuilt_installdir/smrtcmds/bin
+bin3xx := /mnt/software/s/smrttools/3.1.1/smrtcmds/bin
 
 #-- DOUBLE CHECK
 # defaults to an ecoli-type genome size
@@ -111,7 +111,7 @@ draft.fasta.fai: draft.fasta
 
 draft.mapped.bam: threads = 24
 draft.mapped.bam: ${xml} draft.fasta
-	${qsub} ${bin3xx}/blasr $^ --nproc ${threads} --bestn 1 --maxScore -1000 --hitPolicy randombest --bam --out $@
+	${qsub} ${bin3xx}/blasr $^ -nproc ${threads} -bestn 1 -maxScore -1000 -hitPolicy randombest -bam -out $@
 
 draft.sorted.bam: draft.mapped.bam
 	ls > /dev/null && samtools sort $< $(basename $@)
@@ -126,7 +126,10 @@ polished.fasta.gz: draft.fasta draft.sorted.bam draft.fasta.fai draft.sorted.bam
 
 polished.fastq.gz: polished.fasta.gz
 
-alignment_summary.gff: draft.sorted.bam draft.fasta 
+draft.alignmentset.xml: draft.sorted.bam
+	${bin3xx}/dataset create --type AlignmentSet --generateIndices $@ $<
+
+alignment_summary.gff: draft.alignmentset.xml draft.fasta
 	${bin3xx}/python -m pbreports.report.summarize_coverage.summarize_coverage $^ $@
 
 polished_report.json: alignment_summary.gff polished.fastq.gz
